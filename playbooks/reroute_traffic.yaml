@@ -1,0 +1,14 @@
+name: reroute_traffic
+description: Reroute traffic to an alternate path when packet loss or link flap detected
+action: reroute
+triggers:
+  - high_loss
+  - link_flap
+constraints:
+  - name: alternate_capacity
+    condition: "alternate_path_utilization < 80"
+    message: "Alternate path must be below 80% utilization"
+netconf:
+  datastore: candidate
+  operation: edit-config
+rollback_on_verify_fail: true

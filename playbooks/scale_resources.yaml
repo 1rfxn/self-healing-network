@@ -1,0 +1,13 @@
+name: scale_resources
+description: Adjust CPU/memory resource policy when device is overloaded
+action: scale
+triggers:
+  - high_cpu
+constraints:
+  - name: memory_headroom
+    condition: "device_memory < 80"
+    message: "Device memory must have at least 20% headroom before scaling"
+netconf:
+  datastore: candidate
+  operation: edit-config
+rollback_on_verify_fail: false

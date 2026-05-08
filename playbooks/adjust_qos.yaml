@@ -1,0 +1,14 @@
+name: adjust_qos
+description: Reprioritize traffic classes to reduce latency on congested links
+action: qos
+triggers:
+  - high_latency
+  - unknown
+constraints:
+  - name: cpu_headroom
+    condition: "device_cpu < 70"
+    message: "Device CPU must be below 70% to safely apply QoS policy"
+netconf:
+  datastore: candidate
+  operation: edit-config
+rollback_on_verify_fail: true
