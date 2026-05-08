@@ -1,142 +1,119 @@
 # Self-Healing Network AIOps
 
-> Cognizant Technoverse Hackathon 2026 — CMT Track
-> Predicts network faults with ML and auto-remediates via NETCONF, reducing MTTR from hours to seconds.
+[![CI](https://github.com/YOUR_USERNAME/self-healing-network/actions/workflows/ci.yml/badge.svg)](https://github.com/1rfxn/self-healing-network/actions/workflows/ci.yml)
+
+> **Cognizant Technoverse Hackathon 2026 — CMT Track**
+> Predicts network faults with dual ML models and auto-remediates via NETCONF,
+> reducing MTTR from 2.4 hours to under 10 seconds.
 
 ---
 
 ## Architecture
 
 ```
-gNMI/SNMP Devices ──► Kafka (telemetry) ──► Detection  ──► Decision   ──► NETCONF Push ──► Verify
-  (15 devices)              │               IsoForest       Playbooks        ncclient       └─► Fixed
-  core / edge / access      │               LSTM AE         Constraints      DevNet sim     └─► Escalate
-                            └──────────────────────────────────────────── Dashboard (React + WS)
+gNMI/SNMP Devices ──► Kafka ──► Isolation Forest ──► Intent Engine ──► NETCONF Push
+  15 devices                    LSTM Autoencoder     Playbooks          ncclient
+  core/edge/access              (dual detection)     Constraints    ──► Verify (15s)
+                                                                    ──► Healed ✓
+                                                                    ──► Escalate ↑
+                          └──────────── React Dashboard (WebSocket) ───────────────┘
 ```
-
-### Layer map
-
-| Layer        | File                 | What it does |
-|---|---|---|
-| Ingestion    | `src/ingest.py`      | Simulates 15 gNMI devices → Kafka / in-memory queue at 1 Hz |
-| Detection    | `src/detect.py`      | Isolation Forest (point spikes) + LSTM Autoencoder (temporal drift) |
-| Decision     | `src/decision.py`    | Maps anomaly → YAML playbook, constraint check, NETCONF push |
-| Verification | `src/verify.py`      | 60s post-remediation watch; confirms fix or escalates |
-| Orchestrator | `src/main.py`        | Flask-SocketIO WebSocket server — ties all layers together |
-| Dashboard    | `dashboard/src/App.js` | Dark-theme React UI: KPIs, device grid, live charts, event log |
 
 ---
 
-## Quick start
+## Quick start (local)
 
-### Option A — One-click demo (recommended)
+### Prerequisites
+| Tool | Version | Check |
+|---|---|---|
+| Python | 3.11+ | `python --version` |
+| Node.js | 18+ | `node --version` |
+| npm | 9+ | `npm --version` |
 
+### One-command demo
 ```bash
+git clone https://github.com/YOUR_USERNAME/self-healing-network.git
+cd self-healing-network
 bash demo.sh
-# Opens: http://localhost:3000
+# Open http://localhost:3000
 ```
 
-### Option B — Manual steps
-
+### Manual steps
 ```bash
-# 1. Install Python deps
+# 1. Clone and enter
+git clone https://github.com/YOUR_USERNAME/self-healing-network.git
+cd self-healing-network
+
+# 2. Python virtual environment
+python -m venv venv
+venv\Scripts\activate      # Windows
+# source venv/bin/activate  # Mac/Linux
+
+# 3. Install Python deps
 pip install -r requirements.txt
 
-# 2. Generate training data
+# 4. Generate training data
 python generate_data.py
 
-# 3. Train models (~60s)
+# 5. Train ML models (~60s)
 python src/detect.py --train --csv data/normal_telemetry_2hr.csv
 
-# 4. Backend (Terminal 1)
+# 6. Start backend (Terminal 1)
 python src/main.py --demo
 
-# 5. Dashboard (Terminal 2)
-cd dashboard && npm install && npm start
-```
-
-### Option C — Full Kafka mode
-
-```bash
-docker-compose up -d                                   # Kafka + Zookeeper
-python src/detect.py --train --csv data/normal_telemetry_2hr.csv
-python src/main.py                                     # reads from Kafka
-cd dashboard && npm install && npm start
+# 7. Start dashboard (Terminal 2)
+cd dashboard
+npm install
+npm start
+# Opens http://localhost:3000
 ```
 
 ---
 
-## ML models
-
-### Isolation Forest (`src/detect.py`)
-- Trained on 2 hrs of normal telemetry (108,000 rows × 15 devices)
-- Features: rx/tx bytes, packet_loss_pct, latency_ms, cpu_pct, memory_pct, bgp_neighbors, link_flaps
-- `contamination=0.05` — expects ~5% anomaly rate in production
-- Saved to `models/iso_forest.pkl`
-
-### LSTM Autoencoder (`src/detect.py`)
-- Sequence length: 20 samples (20-second window per device)
-- Architecture: Encoder LSTM(64) → Decoder LSTM(64 → n_features)
-- Trained 20 epochs on normal sequences; MSE > 0.05 → anomaly alert
-- Catches **slow, gradual degradation** that threshold rules miss entirely
-- Saved to `models/lstm_ae.pt`
-
----
-
-## Playbooks
-
-| Anomaly type  | Playbook              | Action                    | Key constraint             |
-|---|---|---|---|
-| `high_loss`   | `reroute_traffic.yaml`| Failover to alternate path| Alternate path < 80% load  |
-| `high_latency`| `adjust_qos.yaml`     | Reprioritize traffic class | Device CPU < 70%           |
-| `high_cpu`    | `scale_resources.yaml`| Adjust resource policy    | Memory headroom > 20%      |
-| `link_flap`   | `reroute_traffic.yaml`| Failover to alternate path| Alternate path < 80% load  |
-
----
-
-## NETCONF / Cisco DevNet
-
-Real device push (optional):
+## Inject faults
 
 ```bash
-export NETCONF_HOST=sandbox-nxos-1.cisco.com
-export NETCONF_PORT=830
-export NETCONF_USER=admin
-export NETCONF_PASS=your_password
-```
-
-Without env vars → simulation mode (config printed to console, no device needed).
-Free always-on sandbox: https://devnetsandbox.cisco.com
-
----
-
-## Fault injection API
-
-```bash
-# Inject a fault via REST
+# Packet loss on core router (most dramatic)
 curl -X POST http://localhost:5000/api/inject/dev1/high_loss
+
+# Latency creep — shows LSTM advantage over threshold rules
 curl -X POST http://localhost:5000/api/inject/dev4/high_latency
+
+# CPU overload
 curl -X POST http://localhost:5000/api/inject/dev8/high_cpu
 
-# Available fault types: high_loss | high_latency | high_cpu | link_flap
-# Available devices:     dev1–dev15
+# Triple fault — most impressive for demo
+curl -X POST http://localhost:5000/api/inject/dev1/high_loss & \
+curl -X POST http://localhost:5000/api/inject/dev4/high_latency & \
+curl -X POST http://localhost:5000/api/inject/dev8/high_cpu
 ```
 
-Or use the **device drawer** in the dashboard (click any device card).
+Or click any device card in the dashboard to open the inject drawer.
 
 ---
 
-## Tech stack
+## Connect to real Cisco router (optional)
 
-| Layer       | Technology |
-|---|---|
-| Telemetry   | pygnmi (gNMI), kafka-python |
-| Streaming   | Apache Kafka + Zookeeper (Docker) |
-| ML          | scikit-learn (Isolation Forest), PyTorch (LSTM Autoencoder) |
-| Remediation | ncclient (NETCONF), PyYAML |
-| Backend     | Flask 3, Flask-SocketIO, eventlet |
-| Dashboard   | React 18, Recharts, socket.io-client |
-| Infra       | Docker Compose |
+```bash
+# Free always-on Cisco DevNet sandbox
+export NETCONF_HOST=sandbox-iosxe-latest-1.cisco.com
+export NETCONF_PORT=830
+export NETCONF_USER=developer
+export NETCONF_PASS=C1sco12345
+
+python src/main.py --demo   # now pushes real NETCONF RPCs
+```
+
+Test connection:
+```bash
+python -c "
+from ncclient import manager
+with manager.connect(host='sandbox-iosxe-latest-1.cisco.com',
+    port=830, username='developer', password='C1sco12345',
+    hostkey_verify=False) as m:
+    print('Connected!', len(list(m.server_capabilities)), 'capabilities')
+"
+```
 
 ---
 
@@ -144,31 +121,37 @@ Or use the **device drawer** in the dashboard (click any device card).
 
 ```
 self-healing-network/
+├── .github/workflows/ci.yml   # GitHub Actions — lint, train, smoke test
 ├── src/
-│   ├── __init__.py
-│   ├── ingest.py          # 15-device gNMI simulator → Kafka / queue
-│   ├── detect.py          # IsoForest + LSTM training & inference
-│   ├── decision.py        # Intent engine + constraint check + NETCONF push
-│   ├── verify.py          # 60s post-remediation verification
-│   └── main.py            # Orchestrator + Flask-SocketIO server
+│   ├── ingest.py              # 15-device gNMI simulator → queue / Kafka
+│   ├── detect.py              # Isolation Forest + LSTM Autoencoder
+│   ├── decision.py            # Intent engine + constraint check + NETCONF
+│   ├── verify.py              # 15-second post-remediation verification
+│   └── main.py                # Flask-SocketIO orchestrator
 ├── playbooks/
-│   ├── reroute_traffic.yaml
-│   ├── adjust_qos.yaml
-│   └── scale_resources.yaml
+│   ├── reroute_traffic.yaml   # high_loss, link_flap
+│   ├── adjust_qos.yaml        # high_latency
+│   └── scale_resources.yaml   # high_cpu
 ├── dashboard/
-│   ├── public/index.html
-│   ├── package.json
-│   └── src/
-│       ├── index.js
-│       ├── index.css
-│       └── App.js         # Full React dashboard
-├── data/
-│   └── normal_telemetry_2hr.csv   (generated)
-├── models/                        (generated after training)
-│   ├── iso_forest.pkl
-│   └── lstm_ae.pt
-├── docker-compose.yml
+│   └── src/App.js             # React dashboard — live device grid + charts
+├── data/                      # .gitkeep — generated by generate_data.py
+├── models/                    # .gitkeep — generated by detect.py --train
 ├── generate_data.py
 ├── requirements.txt
-└── demo.sh
+├── demo.sh
+└── docker-compose.yml         # Kafka + Zookeeper (full mode)
 ```
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Telemetry | pygnmi (gNMI), kafka-python |
+| Streaming | Apache Kafka + Zookeeper |
+| Detection | scikit-learn (Isolation Forest), PyTorch (LSTM Autoencoder) |
+| Remediation | ncclient (NETCONF/RESTCONF), PyYAML playbooks |
+| Backend | Flask 3, Flask-SocketIO, eventlet |
+| Dashboard | React 18, Recharts, socket.io-client |
+| CI | GitHub Actions |
